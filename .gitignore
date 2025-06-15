@@ -1,2 +1,4 @@
 /entorno_virtual
 /conversations
+__pycache__/
+*.pyc
