@@ -15,20 +15,21 @@ CONVERSATIONS_DIR = os.path.join(os.path.dirname(__file__), "conversations")
 
 def prepare_history_messages(
     mode: str,
+    model: str,
     include_history: bool = True,
     keep_first_n: int = 3,
     keep_last_n: int = 5,
     max_turns: int = 12,
-    max_tokens_summary_input: int = 3000
+    max_tokens_summary_input: int = 3000,
+    full_summary: bool = False
 ) -> Tuple[List[dict], Optional[str]]:
     """
-    Load, select and optionally summarize conversation history.
+    Load, select, and optionally summarize conversation history.
 
-    mode: model name / conversation subfolder
-    include_history: whether to include any history
-    keep_first_n, keep_last_n: for early+last selection when turns > max_turns
-    max_turns: threshold for early+last strategy
-    max_tokens_summary_input: maximum tokens to allow automatic summarization
+    mode: folder under conversations/ (e.g., 'code', 'explanations')
+    model: OpenAI model name (e.g., 'gpt-4', 'gpt-3.5-turbo')
+    include_history: include any previous messages
+    full_summary: if True, skip early/last slicing and summarize full history
 
     Returns:
       selected_messages: list of message dicts
@@ -37,39 +38,42 @@ def prepare_history_messages(
     if not include_history:
         return [], None
 
+    # Load and strip metadata
     conv_folder = os.path.join(CONVERSATIONS_DIR, mode)
     all_messages = order_and_strip_metadata(conv_folder)
 
-    # Early + last selection
-    if len(all_messages) <= max_turns:
+    # Early+last slicing unless full_summary
+    if full_summary:
         selected = all_messages
     else:
-        selected = all_messages[:keep_first_n] + all_messages[-keep_last_n:]
+        if len(all_messages) <= max_turns:
+            selected = all_messages
+        else:
+            selected = all_messages[:keep_first_n] + all_messages[-keep_last_n:]
 
-    # Skip summary for gpt-3.5 models
-    if mode.startswith("gpt-3.5"):
+    # Skip summarization when using a 3.5 model
+    if model.startswith("gpt-3.5"):
         return selected, None
 
-    # Token check before summarizing
+    # Check token count before summarizing
     token_count = count_tokens(selected, model="gpt-3.5-turbo")
     if token_count > max_tokens_summary_input:
-        print(f"[!] Conversation history too long to summarize ({token_count} tokens).")
-        print("    Please summarize manually or upload a summary file.")
+        print(f"[!] History too long to summarize ({token_count} tokens) for model {model}.")
+        print("    Please summarize manually or use full_summary=True.")
         sys.exit(1)
 
-    # Build prompt for summary
+    # Build and send summarization prompt
     summary_prompt = (
         "You will receive a set of messages from a previous conversation. "
         "Summarize their content clearly and concisely so that it can be reused "
         "as context for a new task."
     )
-    summary_msgs = [{"role": "user", "content": summary_prompt}]
-    summary_msgs.extend(selected)
+    summary_messages = [{"role": "user", "content": summary_prompt}] + selected
 
-    print("[+] Summarizing history using gpt-3.5-turbo...")
+    print(f"[+] Summarizing history using gpt-3.5 for model {model}...")
     resp = openai.ChatCompletion.create(
         model="gpt-3.5-turbo",
-        messages=summary_msgs,
+        messages=summary_messages,
         temperature=0
     )
     summary = resp.choices[0].message.content
@@ -196,7 +200,8 @@ def process_uploaded_files(
 def build_messages_from_context(
     user_prompt: str,
     uploaded_files: List[str],
-    mode: Optional[str] = None,
+    mode: str,
+    model: str = 'gpt-3.5-turbo',
     include_history: bool = True,
     keep_first_n: int = 3,
     keep_last_n: int = 5,
@@ -204,51 +209,56 @@ def build_messages_from_context(
     max_tokens_summary_input: int = 3000,
     summarize_text_files: bool = False,
     summarize_code_fragments: bool = True,
-    incremental_history: bool = True
+    incremental_history: bool = True,
+    full_summary: bool = False
 ) -> List[dict]:
     """
     Orchestrates context preparation and returns final messages list.
 
-    incremental_history: if True, uses incremental summaries instead of full history.
+    mode: conversation category (folder under conversations/)
+    model: OpenAI model name to use for summarization and final call
+    incremental_history: if True, uses incremental summaries; else full summarization
+    full_summary: if True, skip slicing (early+last) for both history methods
     summarize_code_fragments: controls summarization of code fragments in history.
     """
-    model = mode or 'gpt-3.5-turbo'
-
-    # 1. History
+    # 1. History preparation
     if incremental_history:
         history_msgs = prepare_history_messages_incremental(
-            mode=model,
+            mode=mode,
+            model=model,
             include_history=include_history,
             keep_first_n=keep_first_n,
             keep_last_n=keep_last_n,
             max_turns=max_turns,
-            summarize_code_fragments=summarize_code_fragments
+            summarize_code_fragments=summarize_code_fragments,
+            full_summary=full_summary
         )
-        summary_list: List[dict] = history_msgs
+        context_messages = history_msgs
     else:
         history_selected, history_summary = prepare_history_messages(
-            mode=model,
+            mode=mode,
+            model=model,
             include_history=include_history,
             keep_first_n=keep_first_n,
             keep_last_n=keep_last_n,
             max_turns=max_turns,
-            max_tokens_summary_input=max_tokens_summary_input
+            max_tokens_summary_input=max_tokens_summary_input,
+            full_summary=full_summary
         )
-        summary_list = history_selected
+        context_messages = history_selected
         if history_summary:
-            summary_list.append({"role": "user", "content": history_summary})
+            context_messages.append({"role": "user", "content": history_summary})
 
-    messages: List[dict] = []
-    messages.extend(summary_list)
-
-    # 2. Uploaded files
-    file_msgs = process_uploaded_files(
+    # 2. Uploaded files processing
+    file_messages = process_uploaded_files(
         uploaded_files,
         summarize_text=summarize_text_files
     )
-    messages.extend(file_msgs)
 
-    # 3. Current user prompt (never summarize)
-    messages.append({"role": "user", "content": user_prompt})
+    # 3. Final assembly
+    final_messages: List[dict] = []
+    final_messages.extend(context_messages)
+    final_messages.extend(file_messages)
+    final_messages.append({"role": "user", "content": user_prompt})
 
-    return messages
+    return final_messages
