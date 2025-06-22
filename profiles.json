@@ -1,0 +1,101 @@
+{
+    
+  "programming": {
+    "mode": "code",
+    "model": "gpt-4",
+    "temperature": 0.3,
+    "include_history": true,
+    "max_turns": 10,
+    "keep_first_n": 2,
+    "keep_last_n": 4,
+    "summarize_code_fragments": false,
+    "incremental_history": true,
+    "summarize_text_files": false,
+    "message_style": "precise",
+    "response_format": "markdown",
+    "max_response_tokens": 1200,
+    "system_prompt": "You are an expert software developer who helps the user write clean, efficient, and modular code across different programming languages and architectures."
+},
+
+  "code_debugging": {
+    "mode": "code",
+    "model": "gpt-4",
+    "temperature": 0.2,
+    "include_history": true,
+    "max_turns": 6,
+    "keep_first_n": 1,
+    "keep_last_n": 3,
+    "summarize_code_fragments": false,
+    "summarize_text_files": false,
+    "incremental_history": true,
+    "message_style": "precise",
+    "response_format": "markdown",
+    "max_response_tokens": 1000,
+    "system_prompt": "You are a skilled software engineer helping the user debug Python code."
+  },
+
+  "scientific_writer": {
+    "mode": "inform",
+    "model": "gpt-4",
+    "temperature": 0.3,
+    "include_history": true,
+    "max_turns": 10,
+    "keep_first_n": 3,
+    "keep_last_n": 3,
+    "summarize_code_fragments": true,
+    "summarize_text_files": false,
+    "incremental_history": true,
+    "message_style": "academic",
+    "response_format": "latex",
+    "max_response_tokens": 1200,
+    "system_prompt": "You help the user write academic reports with mathematical clarity."
+  },
+
+  "quick_explanation": {
+    "mode": "explanations",
+    "model": "gpt-3.5",
+    "temperature": 0.7,
+    "include_history": false,
+    "summarize_code_fragments": false,
+    "summarize_text_files": false,
+    "incremental_history": false,
+    "message_style": "creative",
+    "response_format": "plain",
+    "max_response_tokens": 800,
+    "system_prompt": "You explain difficult concepts in simple terms."
+  },
+
+  "brainstorming": {
+    "mode": "explanations",
+    "model": "gpt-4",
+    "temperature": 0.85,
+    "include_history": true,
+    "max_turns": 12,
+    "keep_first_n": 2,
+    "keep_last_n": 5,
+    "summarize_code_fragments": false,
+    "summarize_text_files": false,
+    "incremental_history": true,
+    "message_style": "creative",
+    "response_format": "markdown",
+    "max_response_tokens": 1000,
+    "system_prompt": "You help the user develop innovative ideas through open-ended brainstorming."
+  },
+
+  "explain_code_base": {
+    "mode": "code",
+    "model": "gpt-4",
+    "temperature": 0.3,
+    "include_history": true,
+    "max_turns": 10,
+    "keep_first_n": 2,
+    "keep_last_n": 4,
+    "summarize_code_fragments": true,
+    "summarize_text_files": false,
+    "incremental_history": true,
+    "message_style": "academic",
+    "response_format": "markdown",
+    "max_response_tokens": 1400,
+    "system_prompt": "You help the user understand the structure and purpose of a multi-file codebase."
+  }
+}
