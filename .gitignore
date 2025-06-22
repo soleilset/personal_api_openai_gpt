@@ -1,4 +1,5 @@
 /entorno_virtual
 /conversations
-__pycache__/
+/__pycache__/
 *.pyc
+storage.py
