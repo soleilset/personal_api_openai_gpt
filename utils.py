@@ -2,6 +2,8 @@ import os
 import json
 from typing import List, Dict
 import tiktoken
+import re
+import unicodedata
 
 def order_and_strip_metadata(conversation_folder: str) -> List[Dict[str, str]]:
     """
@@ -53,3 +55,32 @@ def count_tokens(messages: List[Dict[str, str]], model: str = "gpt-3.5-turbo") -
         # Encode and count
         total_tokens += len(encoding.encode(content))
     return total_tokens
+
+def slugify(text: str, max_length: int = 50) -> str:
+    """
+    Convert a string into a slug for filename use:
+      - Normalize unicode to ASCII
+      - Lowercase
+      - Replace non-alphanumeric with hyphens
+      - Trim hyphens
+      - Truncate to max_length
+    """
+    # Normalize unicode characters
+    normalized = unicodedata.normalize('NFKD', text)
+    ascii_bytes = normalized.encode('ascii', 'ignore')
+    ascii_str = ascii_bytes.decode('ascii')
+
+    # Lowercase
+    ascii_str = ascii_str.lower()
+
+    # Replace non-alphanumeric characters with hyphens
+    slug = re.sub(r'[^a-z0-9]+', '-', ascii_str)
+
+    # Strip leading/trailing hyphens
+    slug = slug.strip('-')
+
+    # Truncate to max_length
+    if len(slug) > max_length:
+        slug = slug[:max_length].rstrip('-')
+
+    return slug

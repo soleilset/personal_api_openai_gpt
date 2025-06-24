@@ -1,40 +1,62 @@
-# config.py
 import os
+import json
 from dotenv import load_dotenv
 
 
-def load_config():
+def load_config(profile_name: str):
     """
-    Carga y devuelve la configuración necesaria para la herramienta GPT.
-  
-    Variables de entorno opcionales:
-      - GPT_MODEL: modelo por defecto (p.ej. 'gpt-4')
-      - GPT_TEMPERATURE: nivel de aleatoriedad (float)
-      - CONV_DIR: ruta para almacenar conversaciones (por defecto: carpeta 'conversations' junto a este archivo)
+    Load environment settings and merge with a specific profile from profiles.json.
 
-    Requiere obligatoriamente:
-      - OPENAI_API_KEY: clave de API de OpenAI
+    profile_name: key in profiles.json to select desired configuration.
     """
-    # Cargar .env si existe
+    # Load environment variables
     load_dotenv()
 
-    # Clave de API (obligatoria)
+    # Mandatory OpenAI API key
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise EnvironmentError("La variable OPENAI_API_KEY no está definida en el entorno.")
+        raise EnvironmentError("OPENAI_API_KEY is not set in the environment.")
 
-    # Modelo y temperatura (opcional con valores por defecto)
-    model = os.getenv("GPT_MODEL", "gpt-3.5")
-    temp_env = os.getenv("GPT_TEMPERATURE")
-    temperature = float(temp_env) if temp_env is not None else None
-
-    # Carpeta de conversaciones (por defecto, 'conversations' junto a este archivo)
+    # Conversation directory (override via CONV_DIR)
     default_conv = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conversations")
     conv_dir = os.getenv("CONV_DIR", default_conv)
 
-    return {
+    # Load profiles.json
+    profiles_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profiles.json")
+    try:
+        with open(profiles_path, 'r', encoding='utf-8') as f:
+            profiles = json.load(f)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"profiles.json not found at {profiles_path}")
+
+    profile = profiles.get(profile_name)
+    if not profile:
+        available = ', '.join(profiles.keys())
+        raise KeyError(f"Profile '{profile_name}' not found. Available profiles: {available}")
+
+    # Determine model and temperature: profile overrides env defaults
+    env_model = os.getenv("GPT_MODEL")
+    env_temp = os.getenv("GPT_TEMPERATURE")
+    model = profile.get("model") or env_model or "gpt-3.5-turbo"
+    temperature = profile.get("temperature")
+    if temperature is None and env_temp is not None:
+        try:
+            temperature = float(env_temp)
+        except ValueError:
+            temperature = None
+
+    # Assemble config dictionary
+    config = {
         "OPENAI_API_KEY": api_key,
         "MODEL": model,
         "TEMPERATURE": temperature,
         "CONV_DIR": conv_dir,
     }
+
+    # Merge remaining profile settings
+    for key, value in profile.items():
+        # Avoid overwriting uppercase core fields
+        if key.lower() not in ("model", "temperature"):
+            config[key] = value
+
+    return config

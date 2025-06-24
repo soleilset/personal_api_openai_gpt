@@ -19,7 +19,7 @@
 
   "code_debugging": {
     "mode": "code",
-    "model": "gpt-4",
+    "model": "gpt-4o",
     "temperature": 0.2,
     "include_history": true,
     "max_turns": 6,
@@ -67,7 +67,7 @@
 
   "brainstorming": {
     "mode": "explanations",
-    "model": "gpt-4",
+    "model": "gpt-4o",
     "temperature": 0.85,
     "include_history": true,
     "max_turns": 12,
