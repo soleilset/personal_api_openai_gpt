@@ -5,33 +5,29 @@ import tiktoken
 import re
 import unicodedata
 
-def order_and_strip_metadata(conversation_folder: str) -> List[Dict[str, str]]:
+def order_and_strip_metadata(conversation_folder: str) -> List[dict]:
     """
-    Load all JSON conversation files from the given folder in chronological order,
-    strip out any metadata, and return a flat list of message dicts with only 'role' and 'content'.
+    Orders JSON conversation files by timestamp and strips metadata from each message.
+    """
+    if not os.path.exists(conversation_folder):
+        os.makedirs(conversation_folder, exist_ok=True)
+        return []  # No history yet
 
-    Assumes each file is a JSON object with a 'messages' key containing a list of dicts,
-    each dict having at least 'role' and 'content' keys.
-    """
-    # List and sort files
     files = sorted(
         [f for f in os.listdir(conversation_folder) if f.endswith('.json')],
         key=lambda x: os.path.getmtime(os.path.join(conversation_folder, x))
     )
-    all_messages: List[Dict[str, str]] = []
-    for filename in files:
-        path = os.path.join(conversation_folder, filename)
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception:
-            continue  # skip unreadable files
-        messages = data.get('messages') or data.get('conversation') or []
-        for msg in messages:
-            role = msg.get('role')
-            content = msg.get('content')
-            if role and content:
-                all_messages.append({"role": role, "content": content})
+    all_messages = []
+    for fname in files:
+        fpath = os.path.join(conversation_folder, fname)
+        with open(fpath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            for msg in data.get('messages', []):
+                if msg["role"] in {"user", "assistant"}:
+                    all_messages.append({
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    })
     return all_messages
 
 

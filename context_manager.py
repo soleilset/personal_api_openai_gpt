@@ -1,16 +1,21 @@
 import os
 import sys
 import json
-from typing import List, Dict, Tuple, Optional
-import openai
+import time
+from typing import List, Dict, Tuple, Optional, Union
+from dotenv import load_dotenv
+from openai import OpenAI
+from openai._exceptions import RateLimitError, APIError
 
-from utils import (
-    order_and_strip_metadata,
-    count_tokens
-)
+from utils import order_and_strip_metadata, count_tokens
+
+# Load environment variables
+load_dotenv()
 
 # Base directory for conversations
 CONVERSATIONS_DIR = os.path.join(os.path.dirname(__file__), "conversations")
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 def prepare_history_messages(
@@ -21,63 +26,66 @@ def prepare_history_messages(
     keep_last_n: int = 5,
     max_turns: int = 12,
     max_tokens_summary_input: int = 3000,
-    full_summary: bool = False
+    full_summary: bool = False,
+    max_retries: int = 5,
+    retry_delay: float = 3.0
 ) -> Tuple[List[dict], Optional[str]]:
     """
     Load, select, and optionally summarize conversation history.
-
-    mode: folder under conversations/ (e.g., 'code', 'explanations')
-    model: OpenAI model name (e.g., 'gpt-4', 'gpt-3.5-turbo')
-    include_history: include any previous messages
-    full_summary: if True, skip early/last slicing and summarize full history
-
-    Returns:
-      selected_messages: list of message dicts
-      summary: summarized text or None
     """
     if not include_history:
         return [], None
 
-    # Load and strip metadata
+    # Ensure conversation folder exists
     conv_folder = os.path.join(CONVERSATIONS_DIR, mode)
+    os.makedirs(conv_folder, exist_ok=True)
+
+    # Load previous messages
     all_messages = order_and_strip_metadata(conv_folder)
 
-    # Early+last slicing unless full_summary
-    if full_summary:
+    # Apply early+last slicing or full history
+    if full_summary or len(all_messages) <= max_turns:
         selected = all_messages
     else:
-        if len(all_messages) <= max_turns:
-            selected = all_messages
-        else:
-            selected = all_messages[:keep_first_n] + all_messages[-keep_last_n:]
+        selected = all_messages[:keep_first_n] + all_messages[-keep_last_n:]
 
-    # Skip summarization when using a 3.5 model
+    # If model is 3.5, skip summarization
     if model.startswith("gpt-3.5"):
         return selected, None
 
-    # Check token count before summarizing
+    # Check token count
     token_count = count_tokens(selected, model="gpt-3.5-turbo")
     if token_count > max_tokens_summary_input:
-        print(f"[!] History too long to summarize ({token_count} tokens) for model {model}.")
-        print("    Please summarize manually or use full_summary=True.")
+        print(f"[!] History too long ({token_count} tokens). Use full_summary=True or manual summary.")
         sys.exit(1)
 
-    # Build and send summarization prompt
-    summary_prompt = (
+    # Build summary prompt
+    prompt_msg = [{"role": "user", "content": (
         "You will receive a set of messages from a previous conversation. "
-        "Summarize their content clearly and concisely so that it can be reused "
-        "as context for a new task."
-    )
-    summary_messages = [{"role": "user", "content": summary_prompt}] + selected
+        "Summarize their content clearly and concisely so it can be reused as context."
+    )}] + selected
 
-    print(f"[+] Summarizing history using gpt-3.5 for model {model}...")
-    resp = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=summary_messages,
-        temperature=0
-    )
-    summary = resp.choices[0].message.content
-    return selected, summary
+    # Retry logic for summary
+    attempt = 0
+    while True:
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=prompt_msg,
+                temperature=0
+            )
+            summary = resp.choices[0].message.content
+            return selected, summary
+        except (RateLimitError, APIError) as e:
+            attempt += 1
+            if attempt > max_retries:
+                print(f"[ERROR] Summary retry limit reached: {e}")
+                raise
+            print(f"[WARN] Rate limit during summary: {e}. Retrying in {retry_delay}s...")
+            time.sleep(retry_delay)
+        except Exception as e:
+            print(f"[ERROR] Unexpected error summarizing history: {e}")
+            raise
 
 
 def prepare_history_messages_incremental(
@@ -86,120 +94,157 @@ def prepare_history_messages_incremental(
     keep_first_n: int = 3,
     keep_last_n: int = 5,
     max_turns: int = 12,
-    summarize_code_fragments: bool = True
+    summarize_code_fragments: bool = True,
+    full_summary: bool = False,
+    max_retries: int = 5,
+    retry_delay: float = 3.0
 ) -> List[dict]:
     """
-    Incrementally summarize conversation history by adding only the last turn summary.
-    Summaries are stored and updated in conversations/summaries/<mode>/history_summary.json.
-
-    Returns a list of message dicts with summarized entries according to early+last policy.
+    Incrementally summarize history by appending last-turn summary.
     """
     if not include_history:
         return []
 
-    # Ensure summaries folder exists
     summaries_dir = os.path.join(CONVERSATIONS_DIR, "summaries", mode)
     os.makedirs(summaries_dir, exist_ok=True)
     summary_file = os.path.join(summaries_dir, "history_summary.json")
 
-    # Load complete history and existing summaries
     conv_folder = os.path.join(CONVERSATIONS_DIR, mode)
+    os.makedirs(conv_folder, exist_ok=True)
+
     all_messages = order_and_strip_metadata(conv_folder)
+    summaries = []
     if os.path.exists(summary_file):
         with open(summary_file, 'r', encoding='utf-8') as f:
-            summaries: List[Dict[str, str]] = json.load(f)
-    else:
-        summaries = []
+            summaries = json.load(f)
 
-    # Summarize the next message if new
-    next_index = len(summaries)
-    if next_index < len(all_messages):
-        msg = all_messages[next_index]
-        content = msg.get('content', '')
-        # Decide on summarization for code fragments
+    # Summarize next message
+    if len(summaries) < len(all_messages):
+        msg = all_messages[len(summaries)]
+        content = msg['content']
         if not summarize_code_fragments and '```' in content:
             new_summary = content
         else:
-            prompt = (
-                "Summarize the following message for use as shared context in a conversation:\n\n"
-                + content
-            )
-            resp = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0
-            )
-            new_summary = resp.choices[0].message.content
-        summaries.append({"step": next_index + 1, "summary": new_summary})
-        # Save updated summaries
+            prompt = [{"role": "user", "content": "Summarize for context:\n\n" + content}]
+            attempt = 0
+            while True:
+                try:
+                    resp = client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=prompt,
+                        temperature=0
+                    )
+                    new_summary = resp.choices[0].message.content
+                    break
+                except (RateLimitError, APIError) as e:
+                    attempt += 1
+                    if attempt > max_retries:
+                        raise
+                    print(f"[WARN] Rate limit during incremental summary: {e}. Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+        summaries.append({"step": len(summaries) + 1, "summary": new_summary})
         with open(summary_file, 'w', encoding='utf-8') as f:
             json.dump(summaries, f, ensure_ascii=False, indent=2)
 
-    # Apply early+last policy to summaries
-    if len(summaries) <= max_turns:
+    # Apply slicing
+    if full_summary or len(summaries) <= max_turns:
         selected = summaries
     else:
         selected = summaries[:keep_first_n] + summaries[-keep_last_n:]
 
-    # Build list of messages
     return [{"role": "user", "content": entry['summary']} for entry in selected]
 
 
 def summarize_text_file(filepath: str) -> str:
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
-    prompt = (
-        "Summarize the following text clearly and concisely for use as context in a coding assistant:\n\n" + content
-    )
-    resp = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
-    return resp.choices[0].message.content
+    """Summarize text file with retry."""
+    content = open(filepath, 'r', encoding='utf-8').read()
+    prompt = [{"role": "user", "content": "Summarize text:\n\n" + content}]
+    attempt = 0
+    while True:
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=prompt,
+                temperature=0
+            )
+            return resp.choices[0].message.content
+        except (RateLimitError, APIError) as e:
+            attempt += 1
+            if attempt > 5:
+                raise
+            print(f"[WARN] Rate limit during text summary: {e}. Retrying in {3.0}s...")
+            time.sleep(3.0)
 
 
 def summarize_code_flow(filepath: str) -> str:
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
-    prompt = (
-        "Analyze the following code and explain the purpose of each function and how they are interconnected.\n\n" + content
-    )
-    resp = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
-    return resp.choices[0].message.content
+    """Summarize code flow with retry."""
+    content = open(filepath, 'r', encoding='utf-8').read()
+    prompt = [{"role": "user", "content": "Analyze code:\n\n" + content}]
+    attempt = 0
+    while True:
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=prompt,
+                temperature=0
+            )
+            return resp.choices[0].message.content
+        except (RateLimitError, APIError) as e:
+            attempt += 1
+            if attempt > 5:
+                raise
+            print(f"[WARN] Rate limit during code flow summary: {e}. Retrying in {3.0}s...")
+            time.sleep(3.0)
 
 
 def process_uploaded_files(
-    uploaded_files: List[str],
+    uploaded_files: List[Dict[str, Union[str, bool]]],
     summarize_text: bool = False
 ) -> List[dict]:
+    """
+    Process uploaded files with per-file summarize flag.
+    uploaded_files: list of dicts {"path": str, "summarize": bool}
+    """
     messages: List[dict] = []
-    for path in uploaded_files:
+
+    for entry in uploaded_files:
+        path = entry.get("path")
+        summarize_flag = entry.get("summarize", True)
         ext = os.path.splitext(path)[1].lower()
+
+        # Text files
         if ext == '.txt':
             if summarize_text:
+                print(f"[INFO] Summarizing text file: {path}")
                 text = summarize_text_file(path)
             else:
-                with open(path, 'r', encoding='utf-8') as f:
-                    text = f.read()
+                print(f"[INFO] Including full text file: {path}")
+                text = open(path, 'r', encoding='utf-8').read()
             messages.append({"role": "user", "content": text})
+
+        # Code files
         elif ext in ('.py', '.js', '.ts', '.ipynb'):
-            flow = summarize_code_flow(path)
-            messages.append({"role": "user", "content": flow})
+            if summarize_flag:
+                print(f"[INFO] Summarizing code file: {path}")
+                flow = summarize_code_flow(path)
+                messages.append({"role": "user", "content": flow})
+            else:
+                print(f"[INFO] Including full code file: {path}")
+                code = open(path, 'r', encoding='utf-8').read()
+                messages.append({"role": "user", "content": f"```python\n{code}\n```"})
+
+        # Other files
         else:
-            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                data = f.read()
+            print(f"[INFO] Including raw file: {path}")
+            data = open(path, 'r', encoding='utf-8', errors='ignore').read()
             messages.append({"role": "user", "content": data})
+
     return messages
 
 
 def build_messages_from_context(
     user_prompt: str,
-    uploaded_files: List[str],
+    uploaded_files: List[Dict[str, Union[str, bool]]],
     mode: str,
     model: str = 'gpt-3.5-turbo',
     include_history: bool = True,
@@ -210,55 +255,33 @@ def build_messages_from_context(
     summarize_text_files: bool = False,
     summarize_code_fragments: bool = True,
     incremental_history: bool = True,
-    full_summary: bool = False
+    full_summary: bool = False,
+    max_retries: int = 5,
+    retry_delay: float = 3.0
 ) -> List[dict]:
     """
-    Orchestrates context preparation and returns final messages list.
-
-    mode: conversation category (folder under conversations/)
-    model: OpenAI model name to use for summarization and final call
-    incremental_history: if True, uses incremental summaries; else full summarization
-    full_summary: if True, skip slicing (early+last) for both history methods
-    summarize_code_fragments: controls summarization of code fragments in history.
+    Orchestrate context preparation and handle per-file summarization.
     """
-    # 1. History preparation
+    # 1. Prepare history
     if incremental_history:
-        history_msgs = prepare_history_messages_incremental(
-            mode=mode,
-            model=model,
-            include_history=include_history,
-            keep_first_n=keep_first_n,
-            keep_last_n=keep_last_n,
-            max_turns=max_turns,
-            summarize_code_fragments=summarize_code_fragments,
-            full_summary=full_summary
+        context_messages = prepare_history_messages_incremental(
+            mode, include_history, keep_first_n, keep_last_n,
+            max_turns, summarize_code_fragments, full_summary,
+            max_retries, retry_delay
         )
-        context_messages = history_msgs
     else:
-        history_selected, history_summary = prepare_history_messages(
-            mode=mode,
-            model=model,
-            include_history=include_history,
-            keep_first_n=keep_first_n,
-            keep_last_n=keep_last_n,
-            max_turns=max_turns,
-            max_tokens_summary_input=max_tokens_summary_input,
-            full_summary=full_summary
+        selected, summary = prepare_history_messages(
+            mode, model, include_history, keep_first_n, keep_last_n,
+            max_turns, max_tokens_summary_input, full_summary,
+            max_retries, retry_delay
         )
-        context_messages = history_selected
-        if history_summary:
-            context_messages.append({"role": "user", "content": history_summary})
+        context_messages = selected
+        if summary:
+            context_messages.append({"role": "user", "content": summary})
 
-    # 2. Uploaded files processing
-    file_messages = process_uploaded_files(
-        uploaded_files,
-        summarize_text=summarize_text_files
-    )
+    # 2. Process uploaded files with flags
+    file_messages = process_uploaded_files(uploaded_files, summarize_text_files)
 
-    # 3. Final assembly
-    final_messages: List[dict] = []
-    final_messages.extend(context_messages)
-    final_messages.extend(file_messages)
-    final_messages.append({"role": "user", "content": user_prompt})
-
+    # 3. Append current user prompt
+    final_messages = context_messages + file_messages + [{"role": "user", "content": user_prompt}]
     return final_messages

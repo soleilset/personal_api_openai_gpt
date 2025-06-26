@@ -1,150 +1,176 @@
-# GPT API Tool 🧠⚙️
+# GPT API Tool
 
-This project is a minimal, portable tool designed to interact with the OpenAI API in a **flexible**, **editable**, and **reusable** way. It is intended to be embedded in different projects and support modular conversation handling, context reuse, and future automation.
+This project provides a flexible and modular interface for interacting with the OpenAI API using custom profiles and different interaction modes (CLI or interactive). It allows users to send prompts and code files to the API, manage response history, and debug or develop code with conversational context.
 
----
+## 🔧 Installation
 
-## 📦 What is this?
+To set up the project:
 
-A small Python-based architecture that allows you to:
-- Load your API key from a `.env` file
-- Save conversations as structured `.json` files with metadata
-- Organize conversations automatically by interaction type (mode)
-- Drop this tool into any project and start using it
-- Efficiently construct API-ready `messages` by summarizing conversation history and uploaded context
+1. **Clone the repository and navigate into the project directory**:
 
----
+   ```bash
+   git clone https://github.com/yourusername/gpt_api_tool.git
+   cd gpt_api_tool
+   ```
 
-## 🔧 Installation & Configuration
+2. **Install dependencies in a virtual environment**:
 
-1. **Clone this repository** or copy the `gpt_api_tool/` folder into the root directory of your project (e.g. `~/Projects/my_project/`).
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
 
-2. **Create a `.env` file** in the root directory of the project using the API tool (not inside `gpt_api_tool`):
+3. **Set your OpenAI API key**:
+
+   * Create a `.env` file **in the root directory of the project** (same directory as ".../gpt_api_tool").
+   * Inside `.env`, add:
+
+     ```env
+     OPENAI_API_KEY=your-api-key-here
+     ```
+
+   This key will be automatically loaded and used to configure the OpenAI client.
+
+## 🚀 Usage
+
+You can run the tool in two modes:
+
+### 1. CLI Mode (one-shot request)
+
+Send a one-time question to the assistant via terminal:
 
 ```bash
-# .env
-OPENAI_API_KEY=your_openai_key_here
-GPT_MODEL=gpt-4
+python gpt_api_tool/main.py --question "What does this code do?" --files example.py --profile code_debugging
+```
+
+You can also prevent specific files from being summarized using `--no_summary_files`:
+
+```bash
+python gpt_api_tool/main.py --question "Review both files" \
+  --files example1.py example2.py \
+  --no_summary_files example2.py \
+  --profile code_debugging
+```
+
+### 2. Interactive Mode
+
+Enter an interactive chat session with the assistant:
+
+```bash
+python gpt_api_tool/main.py --interactive --files utils.py --profile general
+```
+
+You can exit by typing `exit` or `quit`.
+
+## 📁 Profile Configuration
+
+Profiles are stored in a single `profiles.json` file. Each profile defines a conversational strategy for a specific task, such as code review, summarization, or general Q\&A.
+
+### Example Profile (in `profiles.json`)
+
+```json
+{
+  "code_debugging": {
+    "model": "gpt-4",
+    "mode": "code",
+    "system_prompt": "You are an expert Python assistant.",
+    "include_history": true,
+    "keep_first_n": 3,
+    "keep_last_n": 5,
+    "max_turns": 12,
+    "max_tokens_summary_input": 3000,
+    "summarize_txt_files": true,
+    "summarize_code_fragments": true,
+    "incremental_history": true,
+    "full_summary": false,
+    "temperature": 0.3,
+    "max_response_tokens": 800,
+    "streaming": false
+  }
+}
+```
+
+### Profile Fields Explained
+
+* `model`: OpenAI model name (e.g., `gpt-4`, `gpt-3.5-turbo`)
+* `mode`: Logical label for conversation grouping and history
+* `system_prompt`: Custom role-based prompt to guide assistant behavior
+* `include_history`: Whether to include past conversations in context
+* `keep_first_n`, `keep_last_n`: Number of beginning and recent messages to retain
+* `max_turns`: Cap on total turns to retain before pruning
+* `max_tokens_summary_input`: Max token length allowed for summarization blocks
+* `summarize_txt_files`: Whether to summarize uploaded text files
+* `summarize_code_fragments`: Whether to summarize code fragments in past prompts.
+* `incremental_history`: Whether to use incremental memory (see below)
+* `full_summary`: Use full summarization of prior context
+* `temperature`: Creativity of response (0.0 = deterministic, 1.0 = more random)
+* `max_response_tokens`: Max length of generated response
+* `streaming`: Whether to stream the response as it is being generated
+
+## 🧠 How Message Construction Works
+
+The assistant receives a structured list of messages:
+
+1. If `system_prompt` is defined, it is added first.
+2. If `include_history` is enabled, a history of past chats is loaded based on `mode` and `profile`.
+3. Files passed with `--files` are preprocessed and summarized unless included in `--no_summary_files`.
+4. A user message (`"role": "user"`) is appended with the current input prompt.
+5. The constructed list is passed to the OpenAI API.
+
+This structure allows the assistant to maintain context while staying within token limits.
+
+## 🧠 How Incremental History Works
+
+If `incremental_history` is enabled in the profile, a technique is used to retain memory across turns without exceeding token limits:
+
+* After each interaction, a **summary** of the turn is generated.
+* This summary is appended to a JSON file stored at:
+
+```
+conversations/summaries/<mode>/history_summary.json
+```
+- When constructing the message context for a new turn, this summary history is loaded and appended before the most recent messages. If turns in history_summary.json are higher than max_turns, the message context will use early + lately turns.
+
+This approach allows the assistant to remember previous interactions while keeping the active prompt lightweight.
+
+## 📦 File Summarization Control
+
+You can control summarization behavior for each file:
+
+- Files passed with `--files` are summarized by default.
+- Use `--no_summary_files` followed by filenames to exclude them:
+  ```bash
+  --files main.py config.py --no_summary_files config.py
 ````
 
-3. **Activate your virtual environment** and install dependencies:
-
-```bash
-pip install -r gpt_api_tool/requirements.txt
-```
-
----
-
-## 🧠 How does it work? (Context Construction with `context_manager`)
-
-One of the core strengths of this tool is its ability to build optimized `messages` blocks for use with OpenAI's chat API. This is handled by the `context_manager`, which does the following:
-
-### 🧩 1. Loads previous conversation history
-
-From:
-
-```
-gpt_api_tool/conversations/<mode>/
-```
-
-Messages are automatically sorted in chronological order and stripped of metadata.
-
-You can control how much history is used via:
-
-* `include_history = False`: disables history
-* `max_turns`, `keep_first_n`, `keep_last_n`: slicing policy (early + last)
-
-### 🔁 2. Incrementally summarizes conversation history
-
-Instead of re-summarizing everything on every request, the system uses a persistent summary log:
-
-```
-gpt_api_tool/conversations/summaries/<mode>/history_summary.json
-```
-
-On each new interaction:
-
-* Only the **latest turn** is summarized using `gpt-3.5`
-* The result is **appended** to the summary log
-* This summary log is then used as context for the new request
-
-This results in **much lower costs** and **higher reusability** over time.
-
-### 📄 3. Processes uploaded files
-
-If you provide `.txt` or `.py` files from the command line or UI:
-
-* `.txt` files are optionally summarized
-* `.py` files are **always summarized** into flow-level descriptions (function purpose and interconnections)
-
-These are included in the prompt as `user` messages, seamlessly integrated with your history.
-
-### 📌 4. Adds the current user prompt
-
-The current message (prompt) you provide is always appended as-is.
-If it contains code fragments, they are **never summarized**, preserving full fidelity for code editing workflows.
-
----
-
-## 🗃️ Conversation structure
-
-Each time a conversation is saved, it will be stored as a `.json` file with metadata in the following structure:
+## 📂 Project Structure
 
 ```
 gpt_api_tool/
-├── conversations/
-│   ├── code/           # coding sessions
-│   ├── inform/         # report writing
-│   ├── explanations/   # explanatory or academic queries
-│   └── summaries/      # persistent summaries (by mode)
+├── main.py               # Entry point for CLI and interactive modes
+├── chat_engine.py        # Handles OpenAI calls with retry & streaming
+├── context_manager.py    # Prepares message context from files/history
+├── config.py             # Loads and validates profiles from profiles.json
+├── profiles.json         # Profile definitions for different use cases
+├── storage.py            # Chat history saving per mode/profile
+├── utils.py              # Utility functions (tokenization, slugify, etc.)
+├── conversations/        # Auto-saved conversation logs
+└── requirements.txt      # Python dependencies
 ```
 
-Each `.json` contains:
+## ✅ Example
 
-* Metadata: project name, model, temperature, timestamp
-* Full context: `system`, `user`, and `assistant` messages (in OpenAI format)
-
-### 📂 Example saved file:
-
-```
-gpt_api_tool/conversations/inform/2025-06-14_16-45__structure-guide.json
+```bash
+python gpt_api_tool/main.py -q "Does this code have bugs?" --files my_script.py --profile code_debugging
 ```
 
-These `.json` files can later be reused as input or reference in future runs.
+## 🧠 Tips
+
+* Organize your work by creating custom profiles for each project.
+* Use `--interactive` mode for longer discussions or debugging sessions.
+* Always double-check that your `.env` file contains a valid API key and that your OpenAI quota is not exhausted.
 
 ---
 
-## 🧩 Architecture
-
-The project is modular and extensible:
-
-| Module               | Description                                             |
-| -------------------- | ------------------------------------------------------- |
-| `config.py`          | Loads environment variables and sets paths              |
-| `storage.py`         | Saves conversations with metadata                       |
-| `context_manager.py` | Builds optimized `messages` using incremental summaries |
-| `utils.py`           | Token counting, metadata stripping, file tools          |
-| `chat_engine.py`     | Orchestrates prompt building and API call               |
-| `main.py`            | CLI entry point or testing driver                       |
-
----
-
-## 🚀 Roadmap
-
-* [x] Structured saving of `.json` conversations
-* [x] Incremental summarization via `history_summary.json`
-* [x] Automatic code flow analysis for uploaded `.py` files
-* [x] Modular context construction for chat
-* [ ] Export to `.txt` / `.pdf`
-* [ ] CLI interaction flow
-
----
-
-> ✨ This project is under development, with a focus on being clean, professional, and extensible for real-world generative AI workflows.
-
-```
-
----
-
-¿Quieres que también prepare una breve guía `main.py` para interactuar desde CLI con este flujo? Podría incluir cómo pasar archivos, escribir el prompt y construir el `messages`.
-```
+Feel free to modify or extend this project to suit your workflow. For improvements or suggestions, open a PR or issue. Happy coding!

@@ -1,9 +1,16 @@
-import openai
+import os
+import time
 from typing import List, Optional
+from openai import OpenAI
+from openai._exceptions import RateLimitError, APIError
+
 from utils import slugify
 from config import load_config
 from context_manager import build_messages_from_context
 from storage import save_conversation
+
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 def call_openai_chat(
@@ -11,47 +18,59 @@ def call_openai_chat(
     model: str,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
-    stream: bool = False
+    stream: bool = False,
+    max_retries: int = 5,
+    retry_delay: float = 3.0
 ) -> str:
     """
-    Call OpenAI's ChatCompletion API with the given parameters.
+    Call OpenAI's ChatCompletion API with retry logic for rate limiting.
 
     Args:
-        messages: list of {role, content} dicts
-        model: OpenAI model name (e.g., 'gpt-4', 'gpt-3.5-turbo')
-        temperature: model randomness
-        max_tokens: maximum tokens in response
-        stream: whether to enable streaming
+        messages: List of {role, content} dicts
+        model: OpenAI model name
+        temperature: randomness factor
+        max_tokens: max tokens to generate
+        stream: whether to stream the response
+        max_retries: number of retry attempts on rate limit
+        retry_delay: seconds to wait between retries
 
     Returns:
-        Full response text from the assistant.
+        The full assistant response.
     """
     payload = {
         "model": model,
-        "messages": messages
+        "messages": messages,
+        "stream": stream
     }
     if temperature is not None:
         payload["temperature"] = temperature
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
-    payload["stream"] = stream
 
-    try:
-        response = openai.ChatCompletion.create(**payload)
-        if stream:
-            output = ""
-            for chunk in response:
-                delta = chunk.choices[0].delta.get("content", "")
-                print(delta, end="", flush=True)
-                output += delta
-            print()
-            return output
-        else:
-            return response.choices[0].message["content"]
-
-    except Exception as e:
-        print(f"[ERROR] OpenAI API call failed: {e}")
-        raise
+    attempt = 0
+    while True:
+        try:
+            response = client.chat.completions.create(**payload)
+            if stream:
+                output = ""
+                for chunk in response:
+                    delta = chunk.choices[0].delta.get("content", "")
+                    print(delta, end="", flush=True)
+                    output += delta
+                print()
+                return output
+            else:
+                return response.choices[0].message.content
+        except (RateLimitError, APIError) as e:
+            attempt += 1
+            if attempt > max_retries:
+                print(f"[ERROR] Exceeded max retries ({max_retries}) due to: {e}")
+                raise
+            print(f"[WARN] OpenAI rate limit or API error: {e}. Retrying in {retry_delay}s (attempt {attempt}/{max_retries})...")
+            time.sleep(retry_delay)
+        except Exception as e:
+            print(f"[ERROR] Unexpected error calling OpenAI: {e}")
+            raise
 
 
 def run_chat_engine(
@@ -60,19 +79,19 @@ def run_chat_engine(
     profile_name: str = "programming"
 ) -> str:
     """
-    Orchestrates a chat run using one-turn saving:
-    - Loads config/profile
-    - Builds context messages
-    - Calls OpenAI API
-    - Saves only the last turn (system, user, assistant)
+    Orchestrates a single-turn chat run:
+      - Loads config/profile
+      - Builds context messages
+      - Calls OpenAI API with retry logic
+      - Saves only the last turn (system, user, assistant)
 
-    Returns the assistant's response text.
+    Returns:
+        The assistant's response text.
     """
-    # Load configuration and select profile
+    # Load profile configuration
     config = load_config(profile_name)
-    openai.api_key = config.get("OPENAI_API_KEY")
 
-    # Build the messages list for API call
+    # Build context and user messages
     messages = build_messages_from_context(
         user_prompt=user_prompt,
         uploaded_files=uploaded_files,
@@ -98,19 +117,17 @@ def run_chat_engine(
         stream=config.get("streaming", False)
     )
 
-    # Prepare last-turn messages for saving
+    # Prepare and save only the last turn
     last_turn = []
-    # include system prompt if provided
     system_prompt = config.get("system_prompt")
     if system_prompt:
         last_turn.append({"role": "system", "content": system_prompt})
     last_turn.append({"role": "user", "content": user_prompt})
     last_turn.append({"role": "assistant", "content": response})
 
-    # Auto-generate a description slug from the user prompt
+    # Generate description slug
     description = slugify(user_prompt)
 
-    # Save only the last turn with descriptive filename
     save_conversation(
         mode=config.get("mode", "general"),
         messages=last_turn,
