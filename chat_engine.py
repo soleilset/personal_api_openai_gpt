@@ -4,7 +4,7 @@ from typing import List, Optional
 from openai import OpenAI
 from openai._exceptions import RateLimitError, APIError
 
-from utils import slugify
+from utils import slugify, extract_code_block, apply_code_patch_to_file
 from config import load_config
 from context_manager import build_messages_from_context
 from storage import save_conversation
@@ -24,18 +24,6 @@ def call_openai_chat(
 ) -> str:
     """
     Call OpenAI's ChatCompletion API with retry logic for rate limiting.
-
-    Args:
-        messages: List of {role, content} dicts
-        model: OpenAI model name
-        temperature: randomness factor
-        max_tokens: max tokens to generate
-        stream: whether to stream the response
-        max_retries: number of retry attempts on rate limit
-        retry_delay: seconds to wait between retries
-
-    Returns:
-        The full assistant response.
     """
     payload = {
         "model": model,
@@ -66,7 +54,7 @@ def call_openai_chat(
             if attempt > max_retries:
                 print(f"[ERROR] Exceeded max retries ({max_retries}) due to: {e}")
                 raise
-            print(f"[WARN] OpenAI rate limit or API error: {e}. Retrying in {retry_delay}s (attempt {attempt}/{max_retries})...")
+            print(f"[WARN] API error: {e}. Retrying in {retry_delay}s (attempt {attempt}/{max_retries})...")
             time.sleep(retry_delay)
         except Exception as e:
             print(f"[ERROR] Unexpected error calling OpenAI: {e}")
@@ -75,15 +63,17 @@ def call_openai_chat(
 
 def run_chat_engine(
     user_prompt: str,
-    uploaded_files: List[str],
-    profile_name: str = "programming"
+    uploaded_files: List[dict],
+    profile_name: str = "programming",
+    editing_file: Optional[str] = None
 ) -> str:
     """
     Orchestrates a single-turn chat run:
       - Loads config/profile
       - Builds context messages
       - Calls OpenAI API with retry logic
-      - Saves only the last turn (system, user, assistant)
+      - Saves only the last turn
+      - Optionally applies edits to a given file
 
     Returns:
         The assistant's response text.
@@ -91,7 +81,7 @@ def run_chat_engine(
     # Load profile configuration
     config = load_config(profile_name)
 
-    # Build context and user messages
+    # Build context: history + uploaded files + user prompt
     messages = build_messages_from_context(
         user_prompt=user_prompt,
         uploaded_files=uploaded_files,
@@ -117,7 +107,21 @@ def run_chat_engine(
         stream=config.get("streaming", False)
     )
 
-    # Prepare and save only the last turn
+    # Apply edits if editing_file is provided
+    if editing_file:
+        if not os.path.isfile(editing_file):
+            print(f"[Error] Editing file not found: {editing_file}. Skipping file edit.")
+        else:
+            old_code = extract_code_block(user_prompt)
+            new_code = extract_code_block(response)
+            if old_code and new_code:
+                apply_code_patch_to_file(editing_file, old_code, new_code)
+            elif not old_code:
+                print("[Warning] No code block found in user prompt. Skipping file edit.")
+            elif not new_code:
+                print("[Warning] No code block found in model response. Skipping file edit.")
+
+    # Prepare last-turn messages for saving
     last_turn = []
     system_prompt = config.get("system_prompt")
     if system_prompt:
@@ -125,9 +129,10 @@ def run_chat_engine(
     last_turn.append({"role": "user", "content": user_prompt})
     last_turn.append({"role": "assistant", "content": response})
 
-    # Generate description slug
+    # Generate a filename-friendly slug from the prompt
     description = slugify(user_prompt)
 
+    # Save the last-turn context only
     save_conversation(
         mode=config.get("mode", "general"),
         messages=last_turn,

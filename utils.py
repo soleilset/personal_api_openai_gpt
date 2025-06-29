@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List, Dict
+from typing import List, Dict, Optional
 import tiktoken
 import re
 import unicodedata
@@ -80,3 +80,51 @@ def slugify(text: str, max_length: int = 50) -> str:
         slug = slug[:max_length].rstrip('-')
 
     return slug
+
+def extract_code_block(response_text: str) -> Optional[str]:
+    """
+    Extracts the first code block from the response text, delimited by triple backticks or triple quotes.
+
+    Returns:
+        The inner code as a string, or None if no block found.
+    """
+    # Try triple backticks
+    backtick_match = re.search(r"```(?:python)?\n([\s\S]*?)```", response_text)
+    if backtick_match:
+        return backtick_match.group(1).strip()
+
+    # Try triple single quotes
+    quote_match = re.search(r"'''([\s\S]*?)'''", response_text)
+    if quote_match:
+        return quote_match.group(1).strip()
+
+    return None
+
+
+def apply_code_patch_to_file(filepath: str, old_code: str, new_code: str) -> None:
+    """
+    Applies a code patch to the given file, replacing old_code with new_code.
+    If old_code is not found, appends new_code at the end of the file.
+
+    Args:
+        filepath: path to the file to modify
+        old_code: the original code block to replace
+        new_code: the updated code block
+    """
+    # Read existing content
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Replace old block if present
+    if old_code in content:
+        updated_content = content.replace(old_code, new_code)
+        action = 'replaced'
+    else:
+        # Append new code if old block not found
+        updated_content = content.rstrip() + '\n\n' + new_code + '\n'
+        action = 'appended'
+
+    # Write back
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(updated_content)
+    print(f"[Info] {action.capitalize()} code block in {filepath}.")

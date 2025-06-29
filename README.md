@@ -165,6 +165,43 @@ gpt_api_tool/
 python gpt_api_tool/main.py -q "Does this code have bugs?" --files my_script.py --profile code_debugging
 ```
 
+## ✏️ File Editing Mode (`--editing_file`)
+
+You can use the assistant to directly modify an existing file by specifying the `--editing_file` argument:
+
+```bash
+python gpt_api_tool/main.py --editing_file suma.py -q "Add a function that multiplies two numbers" --profile programming
+```
+
+When `--editing_file` is provided, the tool will **apply the changes directly to the specified file**.
+
+### 🔧 Editing Strategy
+
+* You can provide a **code block you want to modify** wrapped in triple single quotes ('''...''') inside the prompt:
+
+  ```text
+  Edit '''def subtract(a, b): return a - b''' to return the absolute value of the result.
+  ```
+* If you don’t include a code block, the assistant will **analyze the full file** and determine where to insert or modify code.
+* This mode is useful for:
+
+  * Refactoring specific blocks
+  * Fixing bugs
+  * Adding new functions or logic
+
+### 📝 Important Tips
+
+* To include **multi-line code blocks** (e.g., for editing functions), it is highly recommended to **write your prompt in a text editor** and paste it into the terminal. This allows preserving line breaks and indentation correctly.
+* If no '''...''' block is found in the prompt, the assistant will assume the whole file is open to modification.
+
+#### Output Behavior
+
+* The assistant will **print the proposed change in the terminal**.
+* If a code block was identified and a match was found in the file, the tool will **replace it with the updated version**.
+* If no match is found, or the output is not valid, the file will remain unchanged.
+
+---
+
 ## 🧠 Tips
 
 * Organize your work by creating custom profiles for each project.
