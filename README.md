@@ -140,9 +140,9 @@ You can control summarization behavior for each file:
 
 - Files passed with `--files` are summarized by default.
 - Use `--no_summary_files` followed by filenames to exclude them:
-  ```bash
+```bash
   --files main.py config.py --no_summary_files config.py
-````
+```
 
 ## 📂 Project Structure
 
@@ -200,14 +200,10 @@ When `--editing_file` is provided, the tool will **apply the changes directly to
 * If a code block was identified and a match was found in the file, the tool will **replace it with the updated version**.
 * If no match is found, or the output is not valid, the file will remain unchanged.
 
----
-
 ## 🧠 Tips
 
 * Organize your work by creating custom profiles for each project.
 * Use `--interactive` mode for longer discussions or debugging sessions.
 * Always double-check that your `.env` file contains a valid API key and that your OpenAI quota is not exhausted.
-
----
 
 Feel free to modify or extend this project to suit your workflow. For improvements or suggestions, open a PR or issue. Happy coding!
